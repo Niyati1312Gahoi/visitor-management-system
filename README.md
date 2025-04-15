@@ -119,8 +119,8 @@ npm run dev
 ## User Roles
 
 - **Admin**: Full access to all features
-- **Receptionist**: Can register visitors and manage check-ins/check-outs
-- **Guard**: Can only manage check-ins/check-outs
+- **Vistor**: Can register visitors and manage check-ins/check-outs
+
 
 ## Contributing
 
