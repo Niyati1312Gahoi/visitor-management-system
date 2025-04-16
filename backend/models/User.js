@@ -1,3 +1,4 @@
+// models/User.js
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -15,64 +16,44 @@ const UserSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  phone: {
+    type: String
+  },
   role: {
     type: String,
-    enum: ['admin', 'visitor'],
+    enum: ['visitor', 'admin'],
     default: 'visitor'
   },
-  department: {
-    type: String,
-    validate: {
-      validator: function(v) {
-        if (this.role === 'visitor') {
-          return true; // Allow any value (including undefined) for visitors
-        }
-        return v && v.length > 0; // Require non-empty string for admin
-      },
-      message: props => `Department is required for admin role`
-    },
-    default: 'None'
+  company: {
+    type: String
   },
-  permissions: {
-    type: [String],
-    default: function() {
-      switch (this.role) {
-        case 'admin':
-          return ['manage_users', 'manage_visitors', 'view_reports', 'manage_settings'];
-        case 'visitor':
-          return ['view_own_profile'];
-        default:
-          return [];
-      }
-    }
+  photoUrl: {
+    type: String
   },
-  isActive: {
-    type: Boolean,
-    default: true
-  },
-  lastLogin: {
-    type: Date
+  created: {
+    type: Date,
+    default: Date.now
   }
-}, {
-  timestamps: true
 });
 
 // Hash password before saving
 UserSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
+  if (!this.isModified('password')) {
+    return next();
+  }
   
   try {
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
     next();
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    next(err);
   }
 });
 
-// Method to compare password
+// Compare password method
 UserSchema.methods.comparePassword = async function(candidatePassword) {
-  return bcrypt.compare(candidatePassword, this.password);
+  return await bcrypt.compare(candidatePassword, this.password);
 };
 
-module.exports = mongoose.model('User', UserSchema); 
+module.exports = mongoose.model('User', UserSchema);

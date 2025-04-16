@@ -1,72 +1,36 @@
+// server.js
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
-const dotenv = require('dotenv');
+const connectDB = require('./config/db');
+const path = require('path'); // Import path module
+require('dotenv').config();
 
-// Load environment variables
-dotenv.config();
-
+// Initialize express
 const app = express();
 
+// Connect to database
+connectDB();
+
 // Middleware
-app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
-  credentials: true
-}));
-app.use(express.json());
+app.use(express.json({ extended: false }));
+app.use(cors());
 
-// MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/visitor-management';
-console.log('Attempting to connect to MongoDB at:', MONGODB_URI);
-
-mongoose.connect(MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
-  socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
-})
-.then(() => {
-  console.log('Successfully connected to MongoDB');
-  // Verify the connection
-  const db = mongoose.connection;
-  db.on('error', console.error.bind(console, 'MongoDB connection error:'));
-  db.once('open', () => {
-    console.log('MongoDB connection is open');
-  });
-})
-.catch(err => {
-  console.error('MongoDB connection error:', err);
-  console.error('Error stack:', err.stack);
-  process.exit(1);
-});
-
-// API Routes
+// Define routes
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/visitors', require('./routes/visitors'));
-app.use('/api/employees', require('./routes/employees'));
+app.use('/api/visitor', require('./routes/visitor'));
+app.use('/api/admin', require('./routes/admin'));
+app.use('/api/photo', require('./routes/photo'));
+app.use('/api/setup', require('./routes/setup'));
 
-// Basic route for testing
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'Welcome to Visitor Management API',
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+// Serve static assets in production
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static('client/build'));
+  
+  app.get('*', (req, res) => {
+    res.sendFile(path.resolve(__dirname, 'client', 'build', 'index.html'));
   });
-});
+}
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Global error handler:', err);
-  console.error('Error stack:', err.stack);
-  res.status(500).json({ 
-    message: 'Something went wrong!',
-    error: err.message,
-    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-  });
-});
-
-// Start server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log(`MongoDB connection state: ${mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'}`);
-}); 
+
+app.listen(PORT, () => console.log(`Server started on port ${PORT}`));

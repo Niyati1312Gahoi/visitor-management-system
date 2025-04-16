@@ -1,248 +1,154 @@
-const Visitor = require('../models/Visitor');
-const Employee = require('../models/Employee');
-const { startOfDay, endOfDay } = require('date-fns');
-const { format } = require('date-fns');
-
-// Get visitor statistics
-exports.getStats = async (req, res) => {
-  try {
-    const today = new Date();
-    const startOfToday = startOfDay(today);
-    const endOfToday = endOfDay(today);
-
-    const [
-      totalVisitors,
-      checkedInVisitors,
-      pendingVisitors,
-      checkedOutVisitors
-    ] = await Promise.all([
-      Visitor.countDocuments(),
-      Visitor.countDocuments({ status: 'checked-in' }),
-      Visitor.countDocuments({ status: 'pending' }),
-      Visitor.countDocuments({
-        status: 'checked-out',
-        checkOutTime: { $gte: startOfToday, $lte: endOfToday }
-      })
-    ]);
-
-    res.json({
-      totalVisitors,
-      checkedIn: checkedInVisitors,
-      pending: pendingVisitors,
-      checkedOut: checkedOutVisitors
-    });
-  } catch (error) {
-    console.error('Error fetching visitor stats:', error);
-    res.status(500).json({ message: 'Error fetching visitor statistics' });
-  }
-};
-
-// Get recent visitors
-exports.getRecentVisitors = async (req, res) => {
-  try {
-    const visitors = await Visitor.find()
-      .sort({ createdAt: -1 })
-      .limit(10)
-      .populate('hostEmployee', 'name email')
-      .select('fullName company photo status createdAt checkInTime checkOutTime');
-
-    res.json({
-      data: visitors
-    });
-  } catch (error) {
-    console.error('Error fetching recent visitors:', error);
-    res.status(500).json({ message: 'Error fetching recent visitors' });
-  }
-};
-
-// Get active visitors
-exports.getActiveVisitors = async (req, res) => {
-  try {
-    const visitors = await Visitor.find({
-      $or: [
-        { status: 'checked-in' },
-        { status: 'pending' }
-      ]
-    })
-      .sort({ checkInTime: -1 })
-      .populate('hostEmployee', 'name email')
-      .select('fullName company photo status checkInTime hostEmployee');
-
-    res.json({
-      data: visitors
-    });
-  } catch (error) {
-    console.error('Error fetching active visitors:', error);
-    res.status(500).json({ message: 'Error fetching active visitors' });
-  }
-};
-
-// Get visitor's own activities
-exports.getVisitorActivities = async (req, res) => {
-  try {
-    const visitorId = req.user.visitorId; // Assuming visitor ID is stored in user object
-    const activities = await Visitor.find({ _id: visitorId })
-      .sort({ createdAt: -1 })
-      .populate('hostEmployee', 'name email department')
-      .select('name email phone purpose status checkInTime checkOutTime hostEmployee');
-
-    res.json({
-      data: activities
-    });
-  } catch (error) {
-    console.error('Error fetching visitor activities:', error);
-    res.status(500).json({ message: 'Error fetching visitor activities' });
-  }
-};
+// controllers/visitorController.js
+const Visit = require('../models/Visit');
+const PreApproval = require('../models/PreApproval');
+const User = require('../models/User');
+const generateQR = require('../utils/generateQR');
+const generatePasscode = require('../utils/generatePasscode');
+const sendEmail = require('../utils/sendEmail');
 
 // Create a new visit request
-exports.createVisitRequest = async (req, res) => {
-  try {
-    const { hostEmail, purpose, visitDate, visitTime } = req.body;
-    
-    // Find host employee
-    const hostEmployee = await Employee.findOne({ email: hostEmail });
-    if (!hostEmployee) {
-      return res.status(404).json({ message: 'Host employee not found' });
-    }
+exports.createVisit = async (req, res) => {
+  const { host, purpose, visitDate } = req.body;
 
-    // Create visit request
-    const visitRequest = new Visitor({
-      name: req.user.name,
-      email: req.user.email,
-      phone: req.user.phone,
+  try {
+    // Generate QR and passcode
+    const passcode = generatePasscode();
+    const qrCode = await generateQR(passcode);
+
+    const visit = new Visit({
+      visitor: req.user.id,
+      host,
       purpose,
       visitDate,
-      visitTime,
-      hostEmployee: hostEmployee._id,
-      status: 'pending',
-      requestedBy: req.user._id
+      passcode,
+      qrCode
     });
 
-    await visitRequest.save();
+    await visit.save();
 
-    res.status(201).json({
-      message: 'Visit request created successfully',
-      data: visitRequest
-    });
-  } catch (error) {
-    console.error('Error creating visit request:', error);
-    res.status(500).json({ message: 'Error creating visit request' });
+    // Notify host via email
+    if (host.email) {
+      await sendEmail(
+        host.email,
+        'New Visit Request',
+        `You have a new visit request from ${req.user.name} for ${new Date(visitDate).toLocaleString()}.\nPurpose: ${purpose}`
+      );
+    }
+
+    res.json(visit);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server Error');
   }
 };
 
-// Get pending visit requests
-exports.getPendingRequests = async (req, res) => {
+// Get all visits for current visitor
+exports.getMyVisits = async (req, res) => {
   try {
-    const visitorId = req.user._id;
-    const pendingRequests = await Visitor.find({
-      requestedBy: visitorId,
-      status: 'pending'
-    })
-      .sort({ createdAt: -1 })
-      .populate('hostEmployee', 'name email department')
-      .select('name email phone purpose status visitDate visitTime hostEmployee');
-
-    res.json({
-      data: pendingRequests
-    });
-  } catch (error) {
-    console.error('Error fetching pending requests:', error);
-    res.status(500).json({ message: 'Error fetching pending requests' });
+    const visits = await Visit.find({ visitor: req.user.id }).sort({ visitDate: -1 });
+    res.json(visits);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server Error');
   }
 };
 
-// Get visitor analytics data
-exports.getAnalytics = async (req, res) => {
+// Check-in visitor using QR/passcode
+exports.checkIn = async (req, res) => {
+  const { passcode } = req.body;
+
   try {
-    const startDate = new Date();
-    startDate.setFullYear(startDate.getFullYear() - 5); // Get data for last 5 years
+    // First check for regular visits
+    let visit = await Visit.findOne({ 
+      passcode, 
+      status: 'approved',
+      visitDate: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) }  // Today or future
+    });
 
-    // Get first-time visitors per year
-    const firstTimeVisitors = await Visitor.aggregate([
-      {
-        $group: {
-          _id: {
-            visitor: '$email',
-            year: { $year: '$createdAt' }
-          },
-          firstVisit: { $min: '$createdAt' }
-        }
-      },
-      {
-        $group: {
-          _id: { $year: '$firstVisit' },
-          visitors: { $sum: 1 }
-        }
-      },
-      {
-        $project: {
-          _id: 0,
-          year: '$_id',
-          visitors: 1
-        }
-      },
-      { $sort: { year: 1 } }
-    ]);
+    // If not found, check for pre-approvals
+    if (!visit) {
+      const preApproval = await PreApproval.findOne({
+        passcode,
+        status: 'active',
+        validFrom: { $lte: new Date() },
+        validUntil: { $gte: new Date() }
+      });
 
-    // Get visitor types distribution
-    const visitorTypes = await Visitor.aggregate([
-      {
-        $group: {
-          _id: '$purpose',
-          count: { $sum: 1 }
-        }
+      if (preApproval) {
+        // Create a visit from pre-approval
+        visit = new Visit({
+          visitor: req.user.id,
+          host: preApproval.host,
+          purpose: preApproval.purpose,
+          status: 'approved',
+          visitDate: new Date(),
+          passcode: preApproval.passcode,
+          qrCode: preApproval.qrCode
+        });
+
+        // Update pre-approval status
+        preApproval.status = 'used';
+        await preApproval.save();
       }
-    ]);
+    }
 
-    // Get monthly visitor growth
-    const monthlyGrowth = await Visitor.aggregate([
-      {
-        $group: {
-          _id: {
-            year: { $year: '$createdAt' },
-            month: { $month: '$createdAt' }
-          },
-          visitors: { $sum: 1 }
-        }
-      },
-      {
-        $project: {
-          _id: 0,
-          date: {
-            $dateFromParts: {
-              year: '$_id.year',
-              month: '$_id.month'
-            }
-          },
-          visitors: 1
-        }
-      },
-      { $sort: { date: 1 } },
-      { $limit: 12 }
-    ]);
+    if (!visit) {
+      return res.status(404).json({ msg: 'Invalid or expired passcode' });
+    }
 
-    // Get today's time logs
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const timeLogs = await Visitor.find({
-      createdAt: { $gte: today }
-    })
-      .select('name checkInTime checkOutTime')
-      .sort({ checkInTime: 1 });
+    // Update visit status
+    visit.status = 'checked-in';
+    visit.checkInTime = new Date();
+    await visit.save();
 
-    res.json({
-      firstTimeVisitors,
-      visitorTypes,
-      monthlyGrowth,
-      timeLogs: timeLogs.map(log => ({
-        visitor: log.name,
-        in: log.checkInTime ? format(new Date(log.checkInTime), 'h:mm a') : '-',
-        out: log.checkOutTime ? format(new Date(log.checkOutTime), 'h:mm a') : '-'
-      }))
-    });
-  } catch (error) {
-    console.error('Error fetching analytics:', error);
-    res.status(500).json({ message: 'Error fetching analytics' });
+    // Notify host
+    if (visit.host && visit.host.email) {
+      await sendEmail(
+        visit.host.email,
+        'Visitor Check-in Notification',
+        `${req.user.name} has checked in at ${new Date().toLocaleString()}.`
+      );
+    }
+
+    res.json(visit);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server Error');
   }
-}; 
+};
+
+// Check-out visitor
+exports.checkOut = async (req, res) => {
+  const { visitId } = req.params;
+
+  try {
+    const visit = await Visit.findOne({ 
+      _id: visitId,
+      visitor: req.user.id,
+      status: 'checked-in' 
+    });
+
+    if (!visit) {
+      return res.status(404).json({ msg: 'Visit not found or not checked in' });
+    }
+
+    // Update visit status
+    visit.status = 'checked-out';
+    visit.checkOutTime = new Date();
+    await visit.save();
+
+    // Notify host
+    if (visit.host && visit.host.email) {
+      await sendEmail(
+        visit.host.email,
+        'Visitor Check-out Notification',
+        `${req.user.name} has checked out at ${new Date().toLocaleString()}.`
+      );
+    }
+
+    res.json(visit);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server Error');
+  }
+};
